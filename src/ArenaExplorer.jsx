@@ -120,6 +120,26 @@ function iconFromPath(path) {
   return `${BASE}/plugins/rcp-be-lol-game-data/global/default/assets/${rel.toLowerCase()}`;
 }
 
+function getItemIcon(name, itemMap) {
+  if (!name || !itemMap) return "";
+  // exact (our main path)
+  const nk = normKey(name);
+  if (itemMap.has(nk)) return itemMap.get(nk);
+
+  // super-loose fallback: compare alnum-only strings
+  const flat = (s) => (s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const target = flat(name);
+  for (const [k, v] of itemMap.entries()) {
+    if (flat(k) === target) return v;          // strict equal (no spaces/punc)
+  }
+  for (const [k, v] of itemMap.entries()) {
+    const fk = flat(k);
+    if (fk.includes(target) || target.includes(fk)) return v; // contains
+  }
+  return "";
+}
+
+
 
 
 // Simple fallback tile for missing icons
@@ -145,6 +165,32 @@ function PlaceholderIcon({ name }) {
   );
 }
 
+function AugIcon({ tier = "silver", src, name }) {
+  const bg =
+    tier === "gold"
+      ? "linear-gradient(180deg, #FEF3C7, #F59E0B)"
+      : tier === "prismatic"
+      ? "linear-gradient(135deg, #60A5FA, #A78BFA, #F472B6)"
+      : "linear-gradient(180deg, #E5E7EB, #94A3B8)";
+
+  return (
+    <div
+      style={{
+        width: 32,
+        height: 32,
+        borderRadius: 6,
+        padding: 2,
+        background: bg,
+        boxShadow: "inset 0 0 0 1px rgba(0,0,0,.12), 0 1px 2px rgba(0,0,0,.08)",
+      }}
+      title={name}
+    >
+      <CDImg src={src} name={name} plain size={28} />
+    </div>
+  );
+}
+
+
 function getAugIcon(name, augMap) {
   const nk = normKey(name);
   if (augMap.has(nk)) return augMap.get(nk);
@@ -160,44 +206,32 @@ window.__getAugIcon = (name) => {
   return getAugIcon(name, m);
 };
 
-// Image with simple fallback: swap /game/ <-> /plugins/.../ if the first URL 404s
-function CDImg({ src, name }) {
-  const [url, setUrl] = useState(src);
-  const [tried, setTried] = useState(0);
-
-  // Reset when src changes
-  useEffect(() => { setUrl(src || ""); setTried(0); }, [src]);
-
-  const onError = () => {
-    if (!url) return;
-
-    // 1st retry: convert /game/... to /plugins/... with LOWERCASED tail
-    if (tried === 0 && url.includes("/game/")) {
-      const i = url.indexOf("/game/");
-      const base = url.slice(0, i);            // e.g., https://raw.communitydragon.org/latest
-      let tail = url.slice(i + "/game/".length); // e.g., ASSETS/Items/Icons2D/447122_BlackHoleGauntlet.png
-      tail = tail.replace(/^assets\//i, "assets/").toLowerCase(); // -> assets/items/icons2d/447122_blackholegauntlet.png
-      setUrl(`${base}/plugins/rcp-be-lol-game-data/global/default/${tail}`);
-      setTried(1);
-      return;
-    }
-
-    // Give up -> placeholder
-    setUrl("");
-    setTried(99);
-  };
-
-  if (!url) return <PlaceholderIcon name={name} />;
+function CDImg({ src, name, plain = false, size = 32 }) {
+  const [url, setUrl] = React.useState(src || "");
+  React.useEffect(() => { setUrl(src || ""); }, [src]);
 
   return (
     <img
       src={url}
       alt=""
-      style={{ width: 32, height: 32, objectFit: "contain", borderRadius: 6, border: "1px solid #e5e7eb" }}
-      onError={onError}
+      width={size}
+      height={size}
+      referrerPolicy="no-referrer"
+      crossOrigin="anonymous"
+      decoding="async"
+      style={{
+        width: size,
+        height: size,
+        objectFit: "contain",
+        display: "block",
+        // only add border/background when NOT plain
+        ...(plain ? {} : { borderRadius: 6, border: "1px solid #e5e7eb", background: "#fff" }),
+      }}
+      onError={() => { /* leave the broken-image icon visible */ }}
     />
   );
 }
+
 
 
 export default function ArenaExplorer() {
@@ -263,6 +297,14 @@ export default function ArenaExplorer() {
           blackHole: itemMap.get(normKey("Black Hole Gauntlet")),
           cruelty:   itemMap.get(normKey("Cruelty")),
           lightning: itemMap.get(normKey("Lightning Rod")),
+        });
+
+        window.AE_ICONS = window.AE_ICONS || {};
+        window.AE_ICONS.items = itemMap;
+        console.log("check prismatics", {
+          regicide:  getItemIcon("Regicide", itemMap),
+          duskblade: getItemIcon("Duskblade of Draktharr", itemMap),
+          prowlers:  getItemIcon("Prowler's Claw", itemMap),
         });
 
         if (alive) setIcons({ items: itemMap, augs: augMap });
@@ -392,52 +434,62 @@ export default function ArenaExplorer() {
 
       {champion && (
         <>
-          <Section title="Prismatic items — full list">
-            {prisRows.length ? (
-              <div className="grid md:grid-cols-2 gap-3">
-                {prisRows.map((r) => {
-                  const url = getAugIcon(r.augment_name, icons.augs);
-                  return (
-                    <Row
-                      key={r.item_name + "p"}
-                      icon={<CDImg src={url} name={r.item_name} />}
-                      title={r.item_name}
-                      right={<>
-                        <Stat label="WR" value={fmtPct(r.win_rate_present)} />
-                        <Stat label="N" value={fmtInt(r.n_present)} />
-                      </>}
-                    />
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="text-sm text-gray-500">No prismatic rows with N ≥ {minN}.</div>
-            )}
-          </Section>
+{/* === Items side-by-side (always 2 cols) === */}
+<div className="grid grid-cols-2 gap-6">
+  {/* PRISMATIC (left) */}
+  <Section title="Prismatic items — full list">
+    {prisRows.length ? (
+      <div className="space-y-2">
+        {prisRows.map((r) => {
+          const url = getItemIcon(r.item_name, icons.items);
+          return (
+            <Row
+              key={r.item_name + "-p"}
+              icon={<CDImg src={url} name={r.item_name} />}
+              title={r.item_name}
+              right={
+                <>
+                  <Stat label="WR" value={fmtPct(r.win_rate_present)} />
+                  <Stat label="N" value={fmtInt(r.n_present)} />
+                </>
+              }
+            />
+          );
+        })}
+      </div>
+    ) : (
+      <div className="text-sm text-gray-500">No prismatic rows with N ≥ {minN}.</div>
+    )}
+  </Section>
 
-          <Section title="Legendary items — full list">
-            {legRows.length ? (
-              <div className="grid md:grid-cols-2 gap-3">
-                {legRows.map((r) => {
-                  const nk = normKey(r.item_name);
-                  const url = icons.items.get(nk);
-                  return (
-                    <Row
-                      key={r.item_name + "l"}
-                      icon={<CDImg src={url} name={r.item_name} />}
-                      title={r.item_name}
-                      right={<>
-                        <Stat label="WR" value={fmtPct(r.win_rate_present)} />
-                        <Stat label="N" value={fmtInt(r.n_present)} />
-                      </>}
-                    />
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="text-sm text-gray-500">No legendary rows with N ≥ {minN}.</div>
-            )}
-          </Section>
+  {/* LEGENDARY (right) */}
+  <Section title="Legendary items — full list">
+    {legRows.length ? (
+      <div className="space-y-2">
+        {legRows.map((r) => {
+          const url = getItemIcon(r.item_name, icons.items);
+          return (
+            <Row
+              key={r.item_name + "-l"}
+              icon={<CDImg src={url} name={r.item_name} />}
+              title={r.item_name}
+              right={
+                <>
+                  <Stat label="WR" value={fmtPct(r.win_rate_present)} />
+                  <Stat label="N" value={fmtInt(r.n_present)} />
+                </>
+              }
+            />
+          );
+        })}
+      </div>
+    ) : (
+      <div className="text-sm text-gray-500">No legendary rows with N ≥ {minN}.</div>
+    )}
+  </Section>
+</div>
+
+
 
           <Section title="Augments — full lists by tier">
             <div className="overflow-x-auto">
@@ -455,7 +507,7 @@ export default function ArenaExplorer() {
                     return (
                       <Row
                         key={`silver-${r.augment_name}`}
-                        icon={<CDImg src={url} name={r.augment_name} />}
+                        icon={<AugIcon tier={r.tier_norm} src={url} name={r.augment_name} />}
                         title={r.augment_name}
                         right={<>
                           <Badge>{fmtPct(r.win_rate)}</Badge>
@@ -479,7 +531,7 @@ export default function ArenaExplorer() {
                     return (
                       <Row
                         key={`gold-${r.augment_name}`}
-                        icon={<CDImg src={url} name={r.augment_name} />}
+                        icon={<AugIcon tier={r.tier_norm} src={url} name={r.augment_name} />}
                         title={r.augment_name}
                         right={<>
                           <Badge>{fmtPct(r.win_rate)}</Badge>
@@ -503,7 +555,7 @@ export default function ArenaExplorer() {
                     return (
                       <Row
                         key={`prismatic-${r.augment_name}`}
-                        icon={<CDImg src={url} name={r.augment_name} />}
+                        icon={<AugIcon tier={r.tier_norm} src={url} name={r.augment_name} />}
                         title={r.augment_name}
                         right={<>
                           <Badge>{fmtPct(r.win_rate)}</Badge>
